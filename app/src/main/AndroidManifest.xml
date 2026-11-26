@@ -1,12 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Fernseher (Google TV) ohne Touch; laeuft aber auch auf Handys/Tablets -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Verbindung zu Rosenweg (/stationen): Kopplung, Lebenszeichen, PIN -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Vordergrunddienst fuer die Lebenszeichen (Verbindungsdienst), nur solange verbunden -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Freiwillig, per adb: appops set ch.rosenweg4303.kiosk GET_USAGE_STATS allow.
+         Dann meldet der Kiosk genau, welche App vorn laeuft (sonst geschaetzt). -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
     <!-- Nur fuer den Start nach dem Einschalten, solange der Kiosk NICHT Startseite ist:
          Android erlaubt den Activity-Start aus dem Hintergrund nur mit "ueber anderen Apps
          einblenden" (per adb: appops set ch.rosenweg4303.kiosk SYSTEM_ALERT_WINDOW allow). -->
@@ -28,6 +38,8 @@
     </queries>
 
     <application
+        android:name=".KioskApp"
+        android:networkSecurityConfig="@xml/netz"
         android:allowBackup="false"
         android:banner="@drawable/banner"
         android:icon="@mipmap/ic_launcher"
@@ -61,6 +73,26 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".Verbindungsdienst"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Lebenszeichen eines verwalteten Kiosk-Fernsehers an die Stationsverwaltung" />
+        </service>
+
+        <!-- Nach einem Update (Rosenweg Updater, adb install) laeuft der Prozess nicht mehr, bis
+             jemand Home drueckt; dieser Empfaenger startet ihn, damit die Lebenszeichen weitergehen
+             (KioskApp.onCreate startet die Verbindung). -->
+        <receiver
+            android:name=".NachUpdate"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

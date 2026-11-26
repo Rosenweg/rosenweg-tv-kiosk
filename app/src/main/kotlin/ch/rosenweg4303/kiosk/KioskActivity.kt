@@ -6,6 +6,8 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -31,24 +33,45 @@ import android.widget.Toast
  *    wieder Diashow. Home verwirft eine Freigabe immer.
  *  - Richtige PIN: Apps, Android-Einstellungen, Kiosk-Einstellungen, "Diashow starten";
  *    nach 10 min ohne Bedienung wieder Diashow.
+ *  - Gekoppelt mit /stationen und dort gesperrt: nur der Sperrhinweis, keine Diashow, kein Menue
+ *    (bleibt auch ohne Netz, bis /stationen entsperrt).
+ *  - Noch keine PIN und nicht gekoppelt: statt des PIN-Schirms der Kopplungscode.
  *
  * Alles in einer Activity mit wechselnden Ansichten, damit die Zeitgrenzen an einer Stelle liegen.
  */
 class KioskActivity : Activity() {
 
-    private enum class Ansicht { LEER, PIN, APPS, EINSTELLUNGEN, PIN_AENDERN, PAKET_WAEHLEN }
+    private enum class Ansicht { LEER, PIN, APPS, EINSTELLUNGEN, PIN_AENDERN, PAKET_WAEHLEN, KOPPELN, TRENNEN, GESPERRT }
 
     private lateinit var speicher: KioskSpeicher
     private val h = Handler(Looper.getMainLooper())
 
+    /** Was zu sehen ist; das Lebenszeichen meldet es an /stationen. */
     private var ansicht = Ansicht.LEER
+        set(v) {
+            if (field == Ansicht.KOPPELN && v != Ansicht.KOPPELN) Verbindung.kopplungBeenden()
+            field = v
+            Verbindung.ansicht = when (v) {
+                Ansicht.LEER -> "leer"
+                Ansicht.PIN, Ansicht.PIN_AENDERN -> "pin"
+                Ansicht.APPS -> "apps"
+                Ansicht.EINSTELLUNGEN, Ansicht.PAKET_WAEHLEN, Ansicht.TRENNEN -> "einstellungen"
+                Ansicht.KOPPELN -> "koppeln"
+                Ansicht.GESPERRT -> "gesperrt"
+            }
+        }
     private var entsperrt = false
+    /** Die PIN, mit der gerade entsperrt wurde — nur im Speicher, nur solange entsperrt. */
+    private var entsperrPin: String? = null
     /** Diashow gestartet; kommen wir wieder nach vorn, hat jemand sie verlassen. */
     private var diashowUnterwegs = false
+        set(v) { field = v; Verbindung.diashowGestartet = v }
     private var sofortDiashow = false
+    private var diashowNeu = false
     /** Home-Taste gedrueckt: immer zum PIN-Schirm, nie direkt ins Menue. */
     private var homeGedrueckt = false
     private var vordergrund = false
+        set(v) { field = v; Verbindung.kioskVorn = v }
     private var letzteBedienung = 0L
 
     // PIN-Eingabe (PIN-Schirm und "PIN aendern")
@@ -83,6 +106,9 @@ class KioskActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         speicher = KioskSpeicher(this)
+        Verbindung.starten(this)
+        Verbindung.beobachter = { verbindungGeaendert() }
+        Verbindungsdienst.starten(this)
         when {
             b != null -> diashowUnterwegs = b.getBoolean(ZUSTAND_DIASHOW, false)
             // nach dem Einschalten bzw. Start durch den Boot-Empfaenger: Diashow
@@ -90,6 +116,11 @@ class KioskActivity : Activity() {
             // spaeter (Home-Taste, App-Symbol, nachdem Android den Kiosk beendet hat): PIN-Schirm
             else -> homeGedrueckt = true
         }
+    }
+
+    override fun onDestroy() {
+        if (Verbindung.beobachter != null) Verbindung.beobachter = null
+        super.onDestroy()
     }
 
     override fun onSaveInstanceState(o: Bundle) {
@@ -100,17 +131,32 @@ class KioskActivity : Activity() {
     override fun onNewIntent(i: Intent) {
         super.onNewIntent(i)
         setIntent(i)
-        if (i.getBooleanExtra(EXTRA_DIASHOW, false)) sofortDiashow = true
+        if (i.getBooleanExtra(EXTRA_GESPERRT, false)) { entsperrt = false; sofortDiashow = false }
+        else if (i.getBooleanExtra(EXTRA_DIASHOW_NEU, false)) { sofortDiashow = true; diashowNeu = true }
+        else if (i.getBooleanExtra(EXTRA_DIASHOW, false)) sofortDiashow = true
         // Home-Taste (von ueberall: Diashow, andere App, Kiosk-Menue): Freigabe verwerfen, PIN verlangen
         else if (i.hasCategory(Intent.CATEGORY_HOME)) { homeGedrueckt = true; entsperrt = false }
+        // Auftrag von Verbindung (Sperre, Diashow, Neustart), waehrend der Kiosk schon vorn ist:
+        // Android ruft dann nicht immer onResume — also hier erledigen, falls es onResume nicht tat.
+        if (i.getBooleanExtra(EXTRA_GESPERRT, false) || i.getBooleanExtra(EXTRA_DIASHOW, false) || i.getBooleanExtra(EXTRA_DIASHOW_NEU, false)) {
+            h.post {
+                if (!vordergrund) return@post
+                when {
+                    speicher.gesperrt -> if (ansicht != Ansicht.GESPERRT) zeigeGesperrt()
+                    sofortDiashow -> { sofortDiashow = false; val neu = diashowNeu; diashowNeu = false; diashowStarten(neu) }
+                }
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         vordergrund = true
         val jetzt = SystemClock.elapsedRealtime()
+        // Gesperrt auf /stationen: nichts als der Sperrhinweis, auch nach Home oder Neustart.
+        if (speicher.gesperrt) { sofortDiashow = false; homeGedrueckt = false; diashowUnterwegs = false; zeigeGesperrt(); return }
         when {
-            sofortDiashow -> { sofortDiashow = false; diashowStarten() }
+            sofortDiashow -> { sofortDiashow = false; val neu = diashowNeu; diashowNeu = false; diashowStarten(neu) }
             homeGedrueckt -> {
                 homeGedrueckt = false
                 diashowUnterwegs = false
@@ -161,9 +207,10 @@ class KioskActivity : Activity() {
     private fun zeitNeu() {
         h.removeCallbacks(zeitAb)
         val ms = when (ansicht) {
-            Ansicht.LEER -> return
+            Ansicht.LEER, Ansicht.GESPERRT -> return
             Ansicht.PIN -> PIN_MS
-            Ansicht.APPS, Ansicht.EINSTELLUNGEN, Ansicht.PIN_AENDERN, Ansicht.PAKET_WAEHLEN -> ENTSPERRT_MS
+            Ansicht.APPS, Ansicht.EINSTELLUNGEN, Ansicht.PIN_AENDERN, Ansicht.PAKET_WAEHLEN,
+            Ansicht.KOPPELN, Ansicht.TRENNEN -> ENTSPERRT_MS
         }
         if (vordergrund) h.postDelayed(zeitAb, ms)
     }
@@ -171,6 +218,9 @@ class KioskActivity : Activity() {
     // ---- Tasten der Fernbedienung ----------------------------------------------------------
 
     override fun onKeyDown(code: Int, e: KeyEvent): Boolean {
+        // Gesperrt: keine Taste bewirkt etwas (Lautstaerke und Ein/Aus bleiben beim System).
+        if (ansicht == Ansicht.GESPERRT && code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN
+            && code != KeyEvent.KEYCODE_VOLUME_MUTE && code != KeyEvent.KEYCODE_POWER) return true
         val pinEingabe = ansicht == Ansicht.PIN || ansicht == Ansicht.PIN_AENDERN
         when {
             code == KeyEvent.KEYCODE_BACK -> { e.startTracking(); return true }
@@ -184,6 +234,8 @@ class KioskActivity : Activity() {
     }
 
     override fun onKeyUp(code: Int, e: KeyEvent): Boolean {
+        if (ansicht == Ansicht.GESPERRT && code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN
+            && code != KeyEvent.KEYCODE_VOLUME_MUTE) return true
         if (code == KeyEvent.KEYCODE_BACK) {
             if (e.isTracking && !e.isCanceled) zurueck()
             return true
@@ -196,7 +248,9 @@ class KioskActivity : Activity() {
             Ansicht.PIN -> if (eingabe.isNotEmpty()) { eingabe.setLength(0); pinZeigen() } else diashowStarten()
             Ansicht.APPS, Ansicht.LEER -> diashowStarten()
             Ansicht.EINSTELLUNGEN -> zeigeApps()
-            Ansicht.PIN_AENDERN, Ansicht.PAKET_WAEHLEN -> zeigeEinstellungen()
+            Ansicht.PIN_AENDERN, Ansicht.PAKET_WAEHLEN, Ansicht.TRENNEN -> zeigeEinstellungen()
+            Ansicht.KOPPELN -> if (entsperrt) zeigeEinstellungen() else diashowStarten()
+            Ansicht.GESPERRT -> {}
         }
     }
 
@@ -205,6 +259,8 @@ class KioskActivity : Activity() {
         Ansicht.EINSTELLUNGEN -> zeigeEinstellungen()
         Ansicht.PIN_AENDERN -> zeigePinAendern()
         Ansicht.PAKET_WAEHLEN -> zeigePaketWaehlen()
+        Ansicht.KOPPELN -> zeigeKoppeln()
+        Ansicht.TRENNEN -> zeigeTrennen()
         else -> zeigePin()
     }
 
@@ -213,8 +269,11 @@ class KioskActivity : Activity() {
     private fun startIntent(paket: String): Intent? =
         packageManager.getLeanbackLaunchIntentForPackage(paket) ?: packageManager.getLaunchIntentForPackage(paket)
 
-    private fun diashowStarten() {
+    /** neu: Diashow-App neu starten (Aufgabe leeren), angefordert auf /stationen. */
+    private fun diashowStarten(neu: Boolean = false) {
+        if (speicher.gesperrt) { zeigeGesperrt(); return }
         entsperrt = false
+        entsperrPin = null
         eingabe.setLength(0)
         val paket = speicher.zielPaket
         val i = startIntent(paket)
@@ -227,7 +286,8 @@ class KioskActivity : Activity() {
         h.removeCallbacks(zeitAb)
         setContentView(logoSchirm())
         try {
-            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
+            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
+                if (neu) Intent.FLAG_ACTIVITY_CLEAR_TASK else Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
             diashowUnterwegs = true
         } catch (e: ActivityNotFoundException) {
             zeigePin("Diashow lässt sich nicht starten ($paket).")
@@ -239,14 +299,18 @@ class KioskActivity : Activity() {
     // ---- PIN-Schirm ----------------------------------------------------------------------------
 
     private fun zeigePin(fehler: String? = null) {
+        if (speicher.gesperrt) { zeigeGesperrt(); return }
+        // Ohne PIN kommt niemand hinein: dann gleich den Weg zeigen, wie der Fernseher eine bekommt.
+        if (!speicher.pinGesetzt && !speicher.gekoppelt) { zeigeKoppeln(); return }
         ansicht = Ansicht.PIN
         entsperrt = false
+        entsperrPin = null
         eingabe.setLength(0)
         setContentView(pinSchirm("PIN eingeben",
             "Ohne Eingabe geht es nach ${PIN_MS / 1000} s zurück zur Diashow.\nJede Taste startet die Zeit neu. Zurück-Taste: sofort."))
         when {
             fehler != null -> meldung(fehler, Farben.WARNUNG)
-            !speicher.pinGesetzt -> meldung("Noch keine PIN eingerichtet (per adb, siehe Anleitung).", Farben.WARNUNG)
+            !speicher.pinGesetzt -> meldung("Noch keine PIN — sie kommt von /stationen (Gerät ist verbunden).", Farben.WARNUNG)
         }
         h.removeCallbacks(sperreTakt)
         if (speicher.sperreRestMs() > 0) sperreTakt.run()
@@ -347,6 +411,12 @@ class KioskActivity : Activity() {
         when (val r = speicher.pruefen(versuch)) {
             KioskSpeicher.Ergebnis.Richtig -> {
                 entsperrt = true
+                entsperrPin = versuch
+                // /stationen kennt die PIN noch nicht (Fernseher von vor der Kopplung): melden.
+                if (speicher.gekoppelt && !speicher.pinAmServerBekannt && speicher.pinAusstehend == null) {
+                    speicher.pinZumMelden(versuch, speicher.pinStand ?: java.time.Instant.now().toString(), "entsperrt")
+                    Verbindung.jetzt()
+                }
                 letzteBedienung = SystemClock.elapsedRealtime()
                 zeigeApps()
             }
@@ -373,8 +443,15 @@ class KioskActivity : Activity() {
             pinTitel?.text = "Neue PIN wiederholen"
             meldung("", Farben.GRAU)
         } else if (erste == neu) {
-            speicher.pinSetzen(neu)
-            Toast.makeText(this, "PIN geändert", Toast.LENGTH_LONG).show()
+            val stand = java.time.Instant.now().toString()
+            speicher.pinSetzen(neu, stand)
+            entsperrPin = neu
+            if (speicher.gekoppelt) {
+                // Zurueck an /stationen (HTTPS, Stationstoken); bis dahin nur verschluesselt im Keystore.
+                speicher.pinZumMelden(neu, stand, "geaendert")
+                Verbindung.jetzt()
+            }
+            Toast.makeText(this, if (speicher.gekoppelt) "PIN geändert — wird an /stationen gemeldet" else "PIN geändert", Toast.LENGTH_LONG).show()
             zeigeEinstellungen()
         } else {
             neuePinErste = null
@@ -486,9 +563,15 @@ class KioskActivity : Activity() {
         ansicht = Ansicht.EINSTELLUNGEN
         val ziel = speicher.zielPaket
         val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
+        val verbindung = if (speicher.gekoppelt) {
+            val zuletzt = speicher.zuletztGemeldet
+            val wann = if (zuletzt == 0L) "noch nie gemeldet" else "zuletzt gemeldet " + uhrzeit(zuletzt)
+            knopf("Rosenweg: verbunden als ${speicher.stationName ?: speicher.stationId} · $wann", 24f) { zeigeTrennen() }
+        } else knopf("Mit Rosenweg verbinden", 24f) { zeigeKoppeln() }
         liste("Einstellungen", "Version $version · Zurück-Taste: Apps", listOf(
             knopf("PIN ändern", 24f) { zeigePinAendern() },
             knopf("Diashow-App: ${appLabel(ziel)} ($ziel)", 24f) { zeigePaketWaehlen() },
+            verbindung,
             knopf("Nach Updates suchen", 24f) { starten(Intent(this, ch.rosenweg4303.updater.UpdateActivity::class.java)) },
             knopf("Zurück zu den Apps", 24f) { zeigeApps() },
         ))
@@ -507,7 +590,8 @@ class KioskActivity : Activity() {
             .sortedBy { it.second.lowercase() }
         val knoepfe = pakete.map { (p, l) ->
             knopf((if (p == ziel) "✓ " else "") + "$l  ($p)", 22f) {
-                speicher.zielPaket = p
+                speicher.diashowAmGeraet(p)
+                if (speicher.gekoppelt) Verbindung.jetzt()
                 Toast.makeText(this, "Diashow-App: $l", Toast.LENGTH_SHORT).show()
                 zeigeEinstellungen()
             }
@@ -515,6 +599,130 @@ class KioskActivity : Activity() {
         liste("Diashow-App wählen", "Diese App startet beim Einschalten und nach Ablauf der Zeit. Zurück-Taste: abbrechen.",
             knoepfe, pakete.indexOfFirst { it.first == ziel }.coerceAtLeast(0))
     }
+
+    // ---- Verbindung zu Rosenweg ----------------------------------------------------------------
+
+    /** Code und QR-Code; Technik bestaetigt auf /stationen → "Fernseher koppeln". */
+    private fun zeigeKoppeln() {
+        if (speicher.gekoppelt) { zeigeEinstellungen(); return }
+        val neu = ansicht != Ansicht.KOPPELN
+        ansicht = Ansicht.KOPPELN
+        if (neu) Verbindung.kopplungStarten()
+        val k = Verbindung.kopplung
+        val links = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(ImageView(context).apply { setImageResource(R.drawable.rosenweg_logo) }, LinearLayout.LayoutParams(dp(120), dp(120)))
+            addView(text("Mit Rosenweg verbinden", 32f, fett = true).apply { setPadding(0, dp(12), 0, dp(12)) })
+            addView(text(
+                (if (!speicher.pinGesetzt) "Dieser Fernseher hat noch keine PIN. Nach dem Verbinden setzt Technik sie auf /stationen.\n\n" else "") +
+                "1. Auf www.rosenweg4303.ch/stationen anmelden (Technik)\n" +
+                "2. „Fernseher koppeln“ und diesen Code eingeben — oder den QR-Code mit dem Handy scannen\n" +
+                "3. Name, Haus und Standort wählen, „Koppeln“\n\n" +
+                "Danach steuert /stationen Diashow-App, PIN und Sperre. Ohne Netz läuft der Kiosk wie gewohnt weiter.",
+                19f, Farben.GRAU))
+            addView(text("Zurück-Taste: abbrechen", 16f, Farben.GRAU).apply { setPadding(0, dp(16), 0, 0) })
+        }
+        val rechts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            if (k == null) {
+                addView(text(Verbindung.letzterFehler?.let { "Keine Verbindung zu Rosenweg: $it\nNeuer Versuch in wenigen Sekunden …" } ?: "Code wird geholt …",
+                    22f, if (Verbindung.letzterFehler != null) Farben.WARNUNG else Farben.GRAU).apply { gravity = Gravity.CENTER })
+            } else {
+                addView(text(k.code, 56f, fett = true).apply { gravity = Gravity.CENTER; letterSpacing = 0.06f; maxLines = 1 })
+                qrBild(k.qr)?.let { bmp ->
+                    addView(ImageView(context).apply { setImageBitmap(bmp); setBackgroundColor(Color.WHITE) },
+                        LinearLayout.LayoutParams(dp(260), dp(260)).apply { topMargin = dp(12) })
+                }
+                addView(text("gültig bis " + uhrzeit(k.bisMs) + " · wird von selbst erneuert", 16f, Farben.GRAU).apply {
+                    gravity = Gravity.CENTER; setPadding(0, dp(10), 0, 0)
+                })
+            }
+        }
+        // Ein unsichtbarer Fokus-Halter, damit Tasten (und damit die Leerlaufzeit) ankommen
+        val halter = View(this).apply { isFocusable = true; isFocusableInTouchMode = true }
+        val wurzel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(48), dp(24), dp(48), dp(24))
+            addView(links, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.1f))
+            addView(rechts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            addView(halter, LinearLayout.LayoutParams(1, 1))
+        }
+        setContentView(wurzel)
+        halter.requestFocus()
+        if (neu) zeitNeu()
+    }
+
+    /** QR-Matrix vom Server (Zeilen aus '0'/'1') als Bild, mit Ruhezone, scharf skaliert. */
+    private fun qrBild(zeilen: List<String>): Bitmap? {
+        val n = zeilen.size
+        if (n < 21 || zeilen.any { it.length != n }) return null
+        val rand = 4
+        val px = 8
+        val seite = (n + 2 * rand) * px
+        val pixel = IntArray(seite * seite) { Color.WHITE }
+        for (y in 0 until n) for (x in 0 until n) if (zeilen[y][x] == '1') {
+            for (dy in 0 until px) for (dx in 0 until px) pixel[((y + rand) * px + dy) * seite + (x + rand) * px + dx] = Color.BLACK
+        }
+        return Bitmap.createBitmap(pixel, seite, seite, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun zeigeTrennen() {
+        ansicht = Ansicht.TRENNEN
+        liste("Von Rosenweg trennen?", "Der Fernseher meldet sich ab und verschwindet von /stationen. PIN und Diashow-App bleiben. Zurück-Taste: abbrechen.", listOf(
+            knopf("Nein, verbunden bleiben", 24f) { zeigeEinstellungen() },
+            knopf("Ja, trennen", 24f) {
+                Verbindung.trennen { ok ->
+                    Toast.makeText(this, if (ok) "Getrennt" else "Trennen ging nicht (keine Verbindung?)", Toast.LENGTH_LONG).show()
+                    if (ansicht == Ansicht.TRENNEN) zeigeEinstellungen()
+                }
+            },
+        ))
+    }
+
+    /** Auf /stationen gesperrt: nur dieser Hinweis. */
+    private fun zeigeGesperrt() {
+        entsperrt = false
+        entsperrPin = null
+        eingabe.setLength(0)
+        ansicht = Ansicht.GESPERRT
+        h.removeCallbacks(zeitAb)
+        val grund = speicher.sperrGrund
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isFocusable = true
+            addView(ImageView(context).apply { setImageResource(R.drawable.rosenweg_logo) }, LinearLayout.LayoutParams(dp(180), dp(180)))
+            addView(text("Dieser Fernseher ist gesperrt", 36f, fett = true).apply { gravity = Gravity.CENTER; setPadding(0, dp(20), 0, dp(8)) })
+            if (!grund.isNullOrBlank()) addView(text(grund, 24f, Farben.WARNUNG).apply { gravity = Gravity.CENTER })
+            addView(text("Bitte bei der Technik der Siedlung Rosenweg melden.", 20f, Farben.GRAU).apply { gravity = Gravity.CENTER; setPadding(0, dp(16), 0, 0) })
+        })
+    }
+
+    /** Von Verbindung (Hauptfaden): Sperre, Kopplung, PIN oder Diashow-App vom Server. */
+    private fun verbindungGeaendert() {
+        when {
+            speicher.gesperrt -> if (ansicht != Ansicht.GESPERRT && vordergrund) zeigeGesperrt()
+            // entsperrt: Verbindung holt die Diashow selbst nach vorn (EXTRA_DIASHOW)
+            ansicht == Ansicht.GESPERRT -> {}
+            ansicht == Ansicht.KOPPELN && speicher.gekoppelt -> {
+                Verbindungsdienst.starten(this)
+                Toast.makeText(this, "Verbunden als ${speicher.stationName ?: speicher.stationId}", Toast.LENGTH_LONG).show()
+                // Die PIN, mit der gerade entsperrt wurde, gleich melden: dann zeigt /stationen sie sofort.
+                val pin = entsperrPin
+                if (pin != null && !speicher.pinAmServerBekannt && speicher.pinAusstehend == null) {
+                    speicher.pinZumMelden(pin, speicher.pinStand ?: java.time.Instant.now().toString(), "entsperrt")
+                    Verbindung.jetzt()
+                }
+                if (entsperrt) zeigeEinstellungen() else zeigePin()
+            }
+            ansicht == Ansicht.KOPPELN -> zeigeKoppeln()
+        }
+    }
+
+    private fun uhrzeit(ms: Long): String =
+        java.text.SimpleDateFormat("HH:mm", java.util.Locale.GERMANY).format(java.util.Date(ms))
 
     // ---- Logo hinter der Diashow --------------------------------------------------------------
 
@@ -527,6 +735,8 @@ class KioskActivity : Activity() {
 
     companion object {
         const val EXTRA_DIASHOW = "ch.rosenweg4303.kiosk.DIASHOW"
+        const val EXTRA_DIASHOW_NEU = "ch.rosenweg4303.kiosk.DIASHOW_NEU"
+        const val EXTRA_GESPERRT = "ch.rosenweg4303.kiosk.GESPERRT"
         private const val ZUSTAND_DIASHOW = "diashow_unterwegs"
         const val PIN_MS = 30_000L
         const val ENTSPERRT_MS = 10 * 60_000L

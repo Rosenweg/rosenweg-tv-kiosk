@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Fernseher (Google TV) ohne Touch; laeuft aber auch auf Handys/Tablets -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Nur fuer den Start nach dem Einschalten, solange der Kiosk NICHT Startseite ist:
+         Android erlaubt den Activity-Start aus dem Hintergrund nur mit "ueber anderen Apps
+         einblenden" (per adb: appops set ch.rosenweg4303.kiosk SYSTEM_ALERT_WINDOW allow). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Installierte Apps fuer die App-Liste und die Wahl der Diashow-App sehen -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.SETTINGS" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:banner="@drawable/banner"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="false"
+        android:theme="@style/Kiosk">
+
+        <activity
+            android:name=".KioskActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resumeWhilePausing="true"
+            android:stateNotNeeded="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Nach dem Einschalten Diashow (nur noetig, solange der Kiosk nicht Startseite ist) -->
+        <receiver
+            android:name=".StartNachBoot"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Einrichtung per adb (Erst-PIN, Diashow-App). android.permission.DUMP hat nur die
+             adb-Shell bzw. das System, keine andere App darf das senden. -->
+        <receiver
+            android:name=".AdbEinrichtung"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="ch.rosenweg4303.kiosk.EINRICHTEN" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

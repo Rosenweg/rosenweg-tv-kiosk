@@ -83,8 +83,13 @@ class KioskActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         speicher = KioskSpeicher(this)
-        if (b == null) sofortDiashow = true
-        else diashowUnterwegs = b.getBoolean(ZUSTAND_DIASHOW, false)
+        when {
+            b != null -> diashowUnterwegs = b.getBoolean(ZUSTAND_DIASHOW, false)
+            // nach dem Einschalten bzw. Start durch den Boot-Empfaenger: Diashow
+            speicher.ersterStartSeitBoot(this) || intent.getBooleanExtra(EXTRA_DIASHOW, false) -> sofortDiashow = true
+            // spaeter (Home-Taste, App-Symbol, nachdem Android den Kiosk beendet hat): PIN-Schirm
+            else -> homeGedrueckt = true
+        }
     }
 
     override fun onSaveInstanceState(o: Bundle) {

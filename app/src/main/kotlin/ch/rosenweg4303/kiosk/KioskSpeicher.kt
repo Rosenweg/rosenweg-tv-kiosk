@@ -22,6 +22,23 @@ class KioskSpeicher(c: Context) {
 
     val pinGesetzt: Boolean get() = p.contains(PIN_HASH)
 
+    /**
+     * Erster Start seit dem Einschalten? Nur dann (und nach dem Boot-Empfaenger) direkt die
+     * Diashow; jeder spaetere Start (Home-Taste, auch nachdem Android den Kiosk beendet hat,
+     * z. B. nach einem Update) fuehrt zum PIN-Schirm. Merkt sich den Start beim Aufruf.
+     */
+    fun ersterStartSeitBoot(c: Context): Boolean {
+        val zaehler = try {
+            android.provider.Settings.Global.getInt(c.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1)
+        } catch (e: Exception) { -1 }
+        // Rueckfall ohne Boot-Zaehler: Einschaltzeit auf die Minute
+        val boot = if (zaehler >= 0) "z$zaehler"
+            else "t" + (System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()) / 60_000
+        if (p.getString(BOOT, null) == boot) return false
+        p.edit().putString(BOOT, boot).apply()
+        return true
+    }
+
     fun pinSetzen(pin: String) {
         require(pinGueltig(pin)) { "PIN: 4 bis 8 Ziffern" }
         val salz = ByteArray(16).also { SecureRandom().nextBytes(it) }
@@ -73,6 +90,7 @@ class KioskSpeicher(c: Context) {
         private const val PIN_RUNDEN = "pin_runden"
         private const val FEHL = "fehlversuche"
         private const val GESPERRT_BIS = "gesperrt_bis"
+        private const val BOOT = "diashow_boot"
         private const val RUNDEN = 60_000
         const val FREIE_VERSUCHE = 3
         private const val MAX_SPERRE_MS = 15 * 60_000L

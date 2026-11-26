@@ -31,10 +31,12 @@ Rosenweg Kiosk ist eine kleine Android-TV-App (Google TV, z. B. Chromecast mit G
 |---|---|
 | Fernseher eingeschaltet | Diashow startet direkt |
 | Diashow verlassen (Zurück, Home) | PIN-Schirm mit Ziffernfeld |
-| PIN-Schirm 30 s ohne Eingabe | zurück zur Diashow |
+| Home-Taste irgendwo (Diashow, andere App, Kiosk-Menü) | immer PIN-Schirm, nie direkt die App-Liste |
+| PIN-Schirm 30 s ohne jede Eingabe | zurück zur Diashow; jede Taste (Ziffer, Steuerkreuz, Fokuswechsel) startet die 30 s neu |
 | Falsche PIN | Meldung; ab dem 3. Fehlversuch Wartezeit (30 s, dann doppelt so lang, höchstens 15 min) |
 | Richtige PIN | Kacheln: „Diashow starten“, Android-„Einstellungen“, „Kiosk-Einstellungen“ und alle installierten TV-Apps |
-| 10 min ohne Bedienung im Kiosk | zurück zur Diashow |
+| hinter der PIN (Apps, Einstellungen, PIN ändern, Diashow-App wählen) | kein 30-s-Zähler; erst nach 10 min ohne jede Bedienung zurück zur Diashow, jede Taste startet die 10 min neu |
+| andere App offen (z. B. Android-Einstellungen, Netflix) oder Systemfenster darüber | der Kiosk wartet und funkt nicht dazwischen; kommt man nach mehr als 10 min zurück, erscheint der PIN-Schirm |
 | Kiosk-Einstellungen | PIN ändern, Diashow-App wählen, nach Updates suchen |
 
 Die PIN (4 bis 8 Ziffern) liegt nur als Hash (PBKDF2-HMAC-SHA256 mit zufälligem Salz) im privaten Speicher der App. Im Repo steht keine PIN; die erste PIN wird per adb gesetzt. Ohne PIN lässt sich der Kiosk nicht entsperren.
@@ -48,7 +50,7 @@ Die App braucht kein Rosenweg-Konto und kein Backend. Sie läuft auch auf Handys
 | Steuerkreuz + Mitte | Ziffer, ⌫ oder OK wählen | Kachel öffnen | Punkt wählen |
 | Zifferntasten | Ziffer eingeben, Fokus springt auf OK | – | – |
 | Zurück | Eingabe löschen, sonst Diashow | Diashow | zurück zu den Apps |
-| Home (wenn Kiosk Startseite ist) | – | bleibt bei den Apps | zurück zu den Apps |
+| Home (wenn Kiosk Startseite ist) | bleibt auf dem PIN-Schirm | PIN-Schirm (Freigabe weg) | PIN-Schirm (Freigabe weg) |
 
 > **Hinweis zu SlideShow:** SlideShow fängt die Zurück-Taste selbst ab (getestet mit 4.12.8 auf Google TV: Zurück bleibt in der Diashow). Den PIN-Schirm erreicht man dann mit der **Home-Taste**, sobald der Kiosk die Startseite ist, oder in den SlideShow-Einstellungen das Verlassen mit Zurück erlauben.
 

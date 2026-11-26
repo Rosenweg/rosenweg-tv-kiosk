@@ -13,6 +13,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.GridLayout
@@ -26,7 +27,8 @@ import android.widget.Toast
  * Startseite des Kiosk-Fernsehers.
  *
  *  - Start (Einschalten, Startseite, App-Symbol): sofort die Diashow-App.
- *  - Zurueck aus der Diashow (oder Home-Taste): PIN-Schirm; ohne Eingabe nach 30 s wieder Diashow.
+ *  - Zurueck aus der Diashow oder Home-Taste (von ueberall): PIN-Schirm; 30 s ohne jede Eingabe
+ *    wieder Diashow. Home verwirft eine Freigabe immer.
  *  - Richtige PIN: Apps, Android-Einstellungen, Kiosk-Einstellungen, "Diashow starten";
  *    nach 10 min ohne Bedienung wieder Diashow.
  *
@@ -44,6 +46,8 @@ class KioskActivity : Activity() {
     /** Diashow gestartet; kommen wir wieder nach vorn, hat jemand sie verlassen. */
     private var diashowUnterwegs = false
     private var sofortDiashow = false
+    /** Home-Taste gedrueckt: immer zum PIN-Schirm, nie direkt ins Menue. */
+    private var homeGedrueckt = false
     private var vordergrund = false
     private var letzteBedienung = 0L
 
@@ -55,7 +59,14 @@ class KioskActivity : Activity() {
     private var pinMeldung: TextView? = null
     private var okKnopf: View? = null
 
-    private val zeitAb = Runnable { if (vordergrund) diashowStarten() }
+    /**
+     * Leerlauf abgelaufen. Nur wenn der Kiosk wirklich vorn ist und den Fokus hat: liegt eine
+     * andere App, ein Systemfenster (Schnelleinstellungen, Benachrichtigung) oder unser
+     * Updater darueber, funkt der Kiosk nicht dazwischen und wartet die volle Zeit erneut ab.
+     */
+    private val zeitAb = Runnable {
+        if (vordergrund && hasWindowFocus()) diashowStarten() else zeitNeu()
+    }
     private val sperreTakt = object : Runnable {
         override fun run() {
             val rest = speicher.sperreRestMs()
@@ -72,8 +83,13 @@ class KioskActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         speicher = KioskSpeicher(this)
-        if (b == null) sofortDiashow = true
-        else diashowUnterwegs = b.getBoolean(ZUSTAND_DIASHOW, false)
+        when {
+            b != null -> diashowUnterwegs = b.getBoolean(ZUSTAND_DIASHOW, false)
+            // nach dem Einschalten bzw. Start durch den Boot-Empfaenger: Diashow
+            speicher.ersterStartSeitBoot(this) || intent.getBooleanExtra(EXTRA_DIASHOW, false) -> sofortDiashow = true
+            // spaeter (Home-Taste, App-Symbol, nachdem Android den Kiosk beendet hat): PIN-Schirm
+            else -> homeGedrueckt = true
+        }
     }
 
     override fun onSaveInstanceState(o: Bundle) {
@@ -85,8 +101,8 @@ class KioskActivity : Activity() {
         super.onNewIntent(i)
         setIntent(i)
         if (i.getBooleanExtra(EXTRA_DIASHOW, false)) sofortDiashow = true
-        // Home-Taste bei entsperrtem Kiosk: zurueck zur App-Liste
-        else if (entsperrt && i.hasCategory(Intent.CATEGORY_HOME)) ansicht = Ansicht.APPS
+        // Home-Taste (von ueberall: Diashow, andere App, Kiosk-Menue): Freigabe verwerfen, PIN verlangen
+        else if (i.hasCategory(Intent.CATEGORY_HOME)) { homeGedrueckt = true; entsperrt = false }
     }
 
     override fun onResume() {
@@ -95,6 +111,12 @@ class KioskActivity : Activity() {
         val jetzt = SystemClock.elapsedRealtime()
         when {
             sofortDiashow -> { sofortDiashow = false; diashowStarten() }
+            homeGedrueckt -> {
+                homeGedrueckt = false
+                diashowUnterwegs = false
+                // Auf dem PIN-Schirm bewirkt Home nichts (Eingabe bleibt), sonst PIN-Schirm
+                if (ansicht == Ansicht.PIN) zeitNeu() else zeigePin()
+            }
             diashowUnterwegs -> { diashowUnterwegs = false; zeigePin() }
             entsperrt && jetzt - letzteBedienung < ENTSPERRT_MS && ansicht != Ansicht.LEER -> {
                 letzteBedienung = jetzt
@@ -111,15 +133,39 @@ class KioskActivity : Activity() {
         super.onPause()
     }
 
+    /** Jede Taste (auch Steuerkreuz/Fokuswechsel) startet die Leerlaufzeit neu. */
     override fun onUserInteraction() {
         super.onUserInteraction()
         letzteBedienung = SystemClock.elapsedRealtime()
         zeitNeu()
     }
 
+    /** Maus, Air-Remote, Joystick: zaehlt ebenfalls als Bedienung. */
+    override fun dispatchGenericMotionEvent(e: MotionEvent): Boolean {
+        onUserInteraction()
+        return super.dispatchGenericMotionEvent(e)
+    }
+
+    override fun onWindowFocusChanged(fokus: Boolean) {
+        super.onWindowFocusChanged(fokus)
+        // zurueck aus einem Systemfenster: Zeit beginnt von vorn
+        if (fokus && vordergrund) zeitNeu()
+    }
+
+    /**
+     * Leerlauf neu starten. Die 30 s gelten nur auf dem PIN-Schirm (nach Verlassen der
+     * Diashow); hinter der PIN (Apps, Einstellungen, PIN aendern, Diashow-App waehlen) nur
+     * die 10 min ohne jede Bedienung. Laeuft eine andere App, ist der Kiosk pausiert und
+     * es laeuft gar kein Zaehler (onPause).
+     */
     private fun zeitNeu() {
         h.removeCallbacks(zeitAb)
-        if (ansicht != Ansicht.LEER) h.postDelayed(zeitAb, if (entsperrt) ENTSPERRT_MS else PIN_MS)
+        val ms = when (ansicht) {
+            Ansicht.LEER -> return
+            Ansicht.PIN -> PIN_MS
+            Ansicht.APPS, Ansicht.EINSTELLUNGEN, Ansicht.PIN_AENDERN, Ansicht.PAKET_WAEHLEN -> ENTSPERRT_MS
+        }
+        if (vordergrund) h.postDelayed(zeitAb, ms)
     }
 
     // ---- Tasten der Fernbedienung ----------------------------------------------------------
@@ -197,7 +243,7 @@ class KioskActivity : Activity() {
         entsperrt = false
         eingabe.setLength(0)
         setContentView(pinSchirm("PIN eingeben",
-            "Ohne Eingabe geht es nach ${PIN_MS / 1000} s zurück zur Diashow. Zurück-Taste: sofort."))
+            "Ohne Eingabe geht es nach ${PIN_MS / 1000} s zurück zur Diashow.\nJede Taste startet die Zeit neu. Zurück-Taste: sofort."))
         when {
             fehler != null -> meldung(fehler, Farben.WARNUNG)
             !speicher.pinGesetzt -> meldung("Noch keine PIN eingerichtet (per adb, siehe Anleitung).", Farben.WARNUNG)
@@ -381,7 +427,7 @@ class KioskActivity : Activity() {
         val inhalt = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(40), dp(20), dp(40), dp(24))
-            addView(kopf("Apps", "Zurück-Taste: Diashow. Ohne Bedienung nach ${ENTSPERRT_MS / 60_000} min zurück zur Diashow."))
+            addView(kopf("Apps", "Zurück-Taste: Diashow. Nach ${ENTSPERRT_MS / 60_000} min ohne Bedienung zurück zur Diashow."))
             addView(raster, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
             })

@@ -17,6 +17,7 @@
 - [Bedienung](#bedienung)
 - [Einrichten am Fernseher](#einrichten-am-fernseher)
 - [Als Startseite (HOME) festlegen](#als-startseite-home-festlegen)
+- [Mit Rosenweg verbinden (/stationen)](#mit-rosenweg-verbinden-stationen)
 - [Updates](#updates)
 - [Bauen](#bauen)
 - [Neue Version](#neue-version)
@@ -37,11 +38,13 @@ Rosenweg Kiosk ist eine kleine Android-TV-App (Google TV, z. B. Chromecast mit G
 | Richtige PIN | Kacheln: „Diashow starten“, Android-„Einstellungen“, „Kiosk-Einstellungen“ und alle installierten TV-Apps |
 | hinter der PIN (Apps, Einstellungen, PIN ändern, Diashow-App wählen) | kein 30-s-Zähler; erst nach 10 min ohne jede Bedienung zurück zur Diashow, jede Taste startet die 10 min neu |
 | andere App offen (z. B. Android-Einstellungen, Netflix) oder Systemfenster darüber | der Kiosk wartet und funkt nicht dazwischen; kommt man nach mehr als 10 min zurück, erscheint der PIN-Schirm |
-| Kiosk-Einstellungen | PIN ändern, Diashow-App wählen, nach Updates suchen |
+| Kiosk-Einstellungen | PIN ändern, Diashow-App wählen, mit Rosenweg verbinden, nach Updates suchen |
+| auf /stationen gesperrt | nur ein Sperrhinweis — keine Diashow, kein PIN-Schirm, keine Taste wirkt (auch ohne Netz und nach dem Neustart) |
+| noch keine PIN und nicht verbunden | statt des PIN-Schirms der Kopplungscode; die PIN setzt dann Technik auf /stationen |
 
-Die PIN (4 bis 8 Ziffern) liegt nur als Hash (PBKDF2-HMAC-SHA256 mit zufälligem Salz) im privaten Speicher der App. Im Repo steht keine PIN; die erste PIN wird per adb gesetzt. Ohne PIN lässt sich der Kiosk nicht entsperren.
+Die PIN (4 bis 8 Ziffern) liegt nur als Hash (PBKDF2-HMAC-SHA256 mit zufälligem Salz) im privaten Speicher der App. Im Repo steht keine PIN; die erste PIN kommt per adb oder von /stationen. Ohne PIN lässt sich der Kiosk nicht entsperren.
 
-Die App braucht kein Rosenweg-Konto und kein Backend. Sie läuft auch auf Handys und Tablets (kein Touchscreen oder Leanback verlangt), ist aber für die Fernbedienung gebaut: grosse Schrift, deutlicher Fokus, Ziffern auch direkt über die Zifferntasten der Fernbedienung.
+Ohne Verbindung zu Rosenweg läuft die App ganz für sich. Verbunden (siehe [unten](#mit-rosenweg-verbinden-stationen)) erscheint sie auf /stationen und lässt sich dort steuern; fällt das Netz aus, läuft sie mit dem letzten Stand weiter. Sie läuft auch auf Handys und Tablets (kein Touchscreen oder Leanback verlangt), ist aber für die Fernbedienung gebaut: grosse Schrift, deutlicher Fokus, Ziffern auch direkt über die Zifferntasten der Fernbedienung.
 
 ## Bedienung
 
@@ -108,6 +111,52 @@ Solange der Kiosk **nicht** Startseite ist, startet er nach dem Einschalten übe
 adb shell appops set ch.rosenweg4303.kiosk SYSTEM_ALERT_WINDOW allow     # rückgängig: … default
 ```
 
+## Mit Rosenweg verbinden (/stationen)
+
+Verbunden ist der Fernseher eine Station wie die anderen auf [www.rosenweg4303.ch/stationen](https://www.rosenweg4303.ch/stationen) (Art „Kiosk-Fernseher (Google TV)“, API: Rosenweg/Website `api/routes/stations.js`, `api/lib/kiosk.js`).
+
+**Koppeln** — ohne Tastatur, ohne Passwort am Fernseher:
+
+1. Am Fernseher: PIN → Kiosk-Einstellungen → „Mit Rosenweg verbinden“ (ein Fernseher ohne PIN zeigt das gleich statt des PIN-Schirms).
+2. Er zeigt einen Code (`ABCD-EFGH`, 15 min gültig, erneuert sich selbst) und einen QR-Code, der direkt zu `/stationen.html?koppeln=…` führt.
+3. Technik auf /stationen: „Fernseher koppeln“, Code eingeben (oder QR scannen), Modell und Adresse prüfen, Name, Haus, Standort und — falls der Fernseher noch keine hat — eine PIN wählen.
+4. Der Fernseher fragt alle 5 s nach, ist danach Station und meldet die PIN, mit der eben entsperrt wurde (dann zeigt /stationen sie sofort).
+
+Das Token (`rw_station_…`) erzeugt der Fernseher selbst und schickt bei der Kopplung nur seinen sha256; es liegt danach nur im privaten Speicher der App. Der Code allein öffnet nichts — bestätigen kann nur Technik.
+
+**Danach**
+
+| Was | Wie |
+|---|---|
+| Lebenszeichen | jede Minute: Version, Diashow-App und ob sie vorn läuft, IP, MAC (falls Android sie herausgibt), Laufzeit, installierte Apps |
+| Diashow neu starten | auf /stationen, kommt mit dem nächsten Lebenszeichen (≤ 1 min) |
+| Diashow-App | auf /stationen oder am Fernseher; die neueste Wahl gilt |
+| PIN | auf /stationen setzen und (nur Technik/Präsident, protokolliert) anzeigen; am Fernseher geändert, meldet er sie per HTTPS mit seinem Token zurück. Der Fernseher bekommt vom Server nur den Hash. Die neueste Änderung gilt. Eine noch nicht gemeldete PIN wartet verschlüsselt (Android-Keystore) und wird nach dem Melden gelöscht. |
+| Sperren | der Fernseher zeigt nur noch den Sperrhinweis, auch ohne Netz und nach dem Neustart, bis /stationen entsperrt |
+| Entfernen | der Fernseher merkt es am nächsten Lebenszeichen, vergisst die Kopplung und läuft als Kiosk mit seiner PIN weiter |
+| Trennen am Fernseher | Kiosk-Einstellungen → „Rosenweg: verbunden als …“ → „Ja, trennen“ |
+| ohne Netz | alles läuft weiter (letzte Diashow-App, lokaler PIN-Hash, Sperre); Ausstehendes wird nachgeholt |
+
+Solange er verbunden ist, hält ein Vordergrunddienst (`Verbindungsdienst`, auf Google TV unsichtbar) die Lebenszeichen am Laufen — sonst friert Android den Prozess ein, sobald der Kiosk nicht die Startseite hält, etwa nach einem Update.
+
+**MAC für den Anschluss-Wächter:** Android gibt Apps die echte MAC meist nicht heraus. Dann auf /stationen unter „Einstellen …“ eintragen (in UniFi nachsehen; bei WLAN die für dieses Netz).
+
+**Freiwillig, per adb:** genau melden, welche App vorn läuft (sonst geschätzt):
+
+```bash
+adb shell appops set ch.rosenweg4303.kiosk GET_USAGE_STATS allow
+```
+
+**Test gegen eine lokale Attrappe der API** (Klartext nur für 127.0.0.1/localhost):
+
+```bash
+adb reverse tcp:18443 tcp:18443
+adb shell am broadcast -a ch.rosenweg4303.kiosk.EINRICHTEN -n ch.rosenweg4303.kiosk/.AdbEinrichtung --es api http://127.0.0.1:18443
+# zurück:
+adb shell am broadcast -a ch.rosenweg4303.kiosk.EINRICHTEN -n ch.rosenweg4303.kiosk/.AdbEinrichtung --es api standard --ez kopplung_vergessen true
+adb reverse --remove tcp:18443
+```
+
 ## Updates
 
 Die App enthält den **Rosenweg Updater** (`ch.rosenweg4303:updater` aus [commons-rosenweg](https://github.com/Rosenweg/commons-rosenweg)). Unter Kiosk-Einstellungen → „Nach Updates suchen“ liest er den App-Katalog der Telefonanlage (`https://pbx.rosenweg4303.ch/api/apps/index.json`, öffentlich, ohne Anmeldung), prüft jede APK (Prüfsumme, Paketname, Version, Rosenweg-Signatur) und übergibt sie dem Android-Installer. Beim ersten Mal fragt Android, ob die App Apps installieren darf.
@@ -148,8 +197,11 @@ Einmalig auf der Anlage nötig: Repo in `APPS_KATALOG_REPOS` (Website `pbx/api/a
 | Datei | Inhalt |
 |---|---|
 | `app/src/main/kotlin/…/KioskActivity.kt` | Startseite: Diashow, PIN-Schirm, Apps, Kiosk-Einstellungen, Zeitgrenzen |
-| `app/src/main/kotlin/…/KioskSpeicher.kt` | Diashow-App, PIN-Hash, Fehlversuche und Wartezeit |
-| `app/src/main/kotlin/…/Empfaenger.kt` | `AdbEinrichtung` (PIN/Paket per adb), `StartNachBoot` |
+| `app/src/main/kotlin/…/KioskSpeicher.kt` | Diashow-App, PIN-Hash, Fehlversuche und Wartezeit, Kopplung, Ausstehendes |
+| `app/src/main/kotlin/…/Verbindung.kt` | Kopplung, Lebenszeichen, Konfiguration von /stationen anwenden (`KioskApp` startet sie) |
+| `app/src/main/kotlin/…/Verbindungsdienst.kt` | Vordergrunddienst, solange verbunden |
+| `app/src/main/kotlin/…/Empfaenger.kt` | `AdbEinrichtung` (PIN/Paket/API per adb), `StartNachBoot`, `NachUpdate` |
+| `app/src/main/res/xml/netz.xml` | nur HTTPS (ausser 127.0.0.1 für Tests) |
 | `app/src/main/kotlin/…/Oberflaeche.kt` | Knöpfe und Kacheln mit Fokus für die Fernbedienung |
 | `assets/logo/` | Logo-Quellen (SVG), Banner, `erzeugen.sh` |
 | `.github/workflows/apps.yml` | Release an /apps |

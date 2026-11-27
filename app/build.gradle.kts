@@ -22,8 +22,8 @@ android {
         applicationId = "ch.rosenweg4303.kiosk"
         minSdk = 28
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.1.2"
+        versionCode = 7
+        versionName = "1.1.3"
     }
 
     signingConfigs {
@@ -62,5 +62,5 @@ base {
 
 dependencies {
     // Rosenweg Updater aus commons-rosenweg: "Nach Updates suchen" in den Kiosk-Einstellungen
-    implementation("ch.rosenweg4303:updater:0.1.6")   // 0.1.6: eigene Meldungsnummer, jetztPruefen, Versionsstand ans NOC
+    implementation("ch.rosenweg4303:updater:0.1.7")   // 0.1.6: eigene Meldungsnummer, jetztPruefen, Versionsstand ans NOC
 }

@@ -19,7 +19,7 @@ vb = re.search(r'viewBox="([^"]+)"', attr).group(1)
 
 B, H = 1280, 720
 svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {B} {H}">
-  <rect x="0" y="0" width="{B}" height="{H}" fill="#D62828"/>
+  <rect x="0" y="0" width="{B}" height="{H}" fill="#2E6B4F"/>
   <svg x="60" y="80" width="560" height="560" viewBox="{vb}">{inhalt}</svg>
   <g font-family="DejaVu Sans, Helvetica, Arial, sans-serif" fill="#FFFFFF">
     <text x="660" y="330" font-size="118" font-weight="bold">Rosenweg</text>

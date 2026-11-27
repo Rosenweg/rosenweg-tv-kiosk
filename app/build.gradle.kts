@@ -62,5 +62,5 @@ base {
 
 dependencies {
     // Rosenweg Updater aus commons-rosenweg: "Nach Updates suchen" in den Kiosk-Einstellungen
-    implementation("ch.rosenweg4303:updater:0.1.6")
+    implementation("ch.rosenweg4303:updater:0.1.6")   // 0.1.6: eigene Meldungsnummer, jetztPruefen, Versionsstand ans NOC
 }

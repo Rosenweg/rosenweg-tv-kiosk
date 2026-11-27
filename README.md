@@ -164,7 +164,7 @@ Die App enthält den **Rosenweg Updater** (`ch.rosenweg4303:updater` aus [common
 | Was | Stand |
 |---|---|
 | Suche von Hand (Kiosk-Einstellungen) | geht, sobald die App im Katalog steht |
-| tägliche Prüfung mit Benachrichtigung | noch nicht: `ch.rosenweg4303.kiosk` fehlt in `RosenwegUpdater.ZUSTAENDIG` (commons-rosenweg) |
+| tägliche Prüfung mit Benachrichtigung | ab Updater 0.1.4 (Kiosk 1.1.1): `ch.rosenweg4303.kiosk` steht in `RosenwegUpdater.ZUSTAENDIG`; auf einem Fernseher ohne andere Rosenweg-App prüft der Kiosk selbst |
 
 ## Bauen
 
